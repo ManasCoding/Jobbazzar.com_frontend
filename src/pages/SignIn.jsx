@@ -1,4 +1,4 @@
-import React, { useState, useContext } from 'react';
+import React, { useState, useContext, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import AuthContext from '../context/AuthContext';
 
@@ -10,7 +10,17 @@ const SignIn = () => {
   const [error, setError] = useState('');
   
   const navigate = useNavigate();
-  const { login, register } = useContext(AuthContext);
+  const { userInfo, login, register } = useContext(AuthContext);
+
+  useEffect(() => {
+    if (userInfo) {
+      if (userInfo.role === 'admin') {
+        navigate('/admin-dashboard');
+      } else {
+        navigate('/');
+      }
+    }
+  }, [userInfo, navigate]);
   
   const handleSubmit = async (e) => {
     e.preventDefault();

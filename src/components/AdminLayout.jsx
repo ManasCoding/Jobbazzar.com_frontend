@@ -1,23 +1,42 @@
-import React, { useContext } from 'react';
+import React, { useContext, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import AuthContext from '../context/AuthContext';
 import { 
   LayoutDashboard, Building2, Briefcase, Users, FileText, Grid, Tag, 
-  MapPin, TrendingUp, Settings, FileBarChart, LogOut, Search, Bell, ChevronDown, Menu 
+  MapPin, TrendingUp, Settings, FileBarChart, LogOut, Search, Bell, ChevronDown, Menu, Loader2 
 } from 'lucide-react';
 
 const AdminLayout = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { logout } = useContext(AuthContext);
+  const { userInfo, loading, logout } = useContext(AuthContext);
   const currentPath = location.pathname;
 
   const isActive = (path) => currentPath === path;
+
+  useEffect(() => {
+    if (!loading && (!userInfo || userInfo.role !== 'admin')) {
+      navigate('/signin');
+    }
+  }, [userInfo, loading, navigate]);
 
   const handleLogout = async () => {
     await logout();
     navigate('/');
   };
+
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-50 text-gray-600 gap-3">
+        <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+        <span className="text-sm font-medium">Checking admin authorization...</span>
+      </div>
+    );
+  }
+
+  if (!userInfo || userInfo.role !== 'admin') {
+    return null;
+  }
 
   return (
     <div className="flex h-screen bg-[#f3f4f6] font-sans overflow-hidden text-gray-800">
@@ -112,12 +131,12 @@ const AdminLayout = ({ children }) => {
               <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 border-2 border-white rounded-full text-[9px] font-bold text-white flex items-center justify-center">3</span>
             </div>
             <div className="flex items-center gap-2 cursor-pointer border-l pl-5">
-              <div className="w-8 h-8 rounded-full bg-gray-800 text-white flex items-center justify-center font-bold text-sm">
-                A
+              <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-sm">
+                {(userInfo?.name?.[0] || 'A').toUpperCase()}
               </div>
               <div className="hidden md:block">
-                <div className="text-sm font-bold text-gray-800 leading-tight">Admin</div>
-                <div className="text-[10px] text-gray-500">Super Admin <ChevronDown className="inline w-3 h-3" /></div>
+                <div className="text-sm font-bold text-gray-800 leading-tight">{userInfo?.name || 'Admin'}</div>
+                <div className="text-[10px] text-gray-500 capitalize">{userInfo?.role || 'Admin'} <ChevronDown className="inline w-3 h-3" /></div>
               </div>
             </div>
           </div>
