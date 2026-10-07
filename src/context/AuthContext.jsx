@@ -33,16 +33,21 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     const fetchUser = async () => {
       const token = localStorage.getItem('jb_token');
+      // No token — skip the network call entirely
+      if (!token) {
+        setUserInfo(null);
+        setLoading(false);
+        return;
+      }
       try {
-        const res = await axios.get('http://localhost:5000/api/v1/auth/me');
+        const res = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/v1/auth/me`);
         setUserInfo(res.data.data);
         localStorage.setItem('jb_user', JSON.stringify(res.data.data));
       } catch (error) {
-        // Not logged in or invalid token
-        if (!token) {
-          setUserInfo(null);
-          localStorage.removeItem('jb_user');
-        }
+        // Token invalid or expired
+        localStorage.removeItem('jb_token');
+        localStorage.removeItem('jb_user');
+        setUserInfo(null);
       } finally {
         setLoading(false);
       }
@@ -51,7 +56,7 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const login = async (email, password) => {
-    const res = await axios.post('http://localhost:5000/api/v1/auth/login', { email, password });
+    const res = await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/v1/auth/login`, { email, password });
     const user = res.data.data;
     setUserInfo(user);
     if (user.token) {
@@ -62,7 +67,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const register = async (name, email, password) => {
-    const res = await axios.post('http://localhost:5000/api/v1/auth/register', { name, email, password });
+    const res = await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/v1/auth/register`, { name, email, password });
     const user = res.data.data;
     setUserInfo(user);
     if (user.token) {
@@ -74,7 +79,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     try {
-      await axios.post('http://localhost:5000/api/v1/auth/logout');
+      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/v1/auth/logout`);
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
