@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useContext } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
+import AuthContext from '../context/AuthContext';
 import { MapContainer, TileLayer, Marker, ZoomControl, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import useSupercluster from 'use-supercluster';
+import MarkerClusterGroup from 'react-leaflet-cluster';
 import { 
   MapPin, Search, ChevronDown, User, Building2, Building, Rocket, 
   Users, Briefcase, Map, List, Globe, Navigation, X, CheckCircle2,
@@ -18,6 +20,18 @@ L.Icon.Default.mergeOptions({
   iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
+
+// Inject animation CSS for markercluster
+const style = document.createElement('style');
+style.innerHTML = `
+  .leaflet-cluster-anim .leaflet-marker-icon, .leaflet-cluster-anim .leaflet-marker-shadow {
+    -webkit-transition: -webkit-transform 0.3s ease-out, opacity 0.3s ease-in;
+    -moz-transition: -moz-transform 0.3s ease-out, opacity 0.3s ease-in;
+    -o-transition: -o-transform 0.3s ease-out, opacity 0.3s ease-in;
+    transition: transform 0.3s ease-out, opacity 0.3s ease-in;
+  }
+`;
+document.head.appendChild(style);
 
 // Helper for custom colored cluster icons
 const createClusterIcon = (count, colorClass) => {
@@ -169,6 +183,7 @@ const MapEvents = ({ setBounds, setZoom }) => {
 // Generate an initial mock database combining top companies and fake startups 
 // to demonstrate realistic geographical clustering across zoom levels.
 const Home = () => {
+  const { userInfo, logout } = useContext(AuthContext);
   const [showRightCard, setShowRightCard] = useState(false);
   const [selectedCompany, setSelectedCompany] = useState(null);
 
@@ -178,6 +193,9 @@ const Home = () => {
 
   // Sidebar toggle state
   const [showSidebar, setShowSidebar] = useState(true);
+
+  // View Mode toggle state
+  const [viewMode, setViewMode] = useState('map');
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -199,7 +217,7 @@ const Home = () => {
   useEffect(() => {
     const fetchCompanies = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/v1/companies?limit=1000');
+        const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/v1/companies?limit=1000`);
         const data = await response.json();
         if (data.success) {
           const companyList = Array.isArray(data.data) ? data.data : (data.data?.companies || []);
@@ -233,9 +251,37 @@ const Home = () => {
     };
     fetchCompanies();
   }, []);
+  const [filters, setFilters] = useState({
+    jobType: '',
+    companyType: '',
+    radius: '',
+    sector: '',
+    hiringNow: false,
+    remoteOnly: false,
+    activelyHiring: false,
+    withSalary: false
+  });
 
-  const allCompanies = apiCompanies;
-  const topCompanies = apiCompanies.slice(0, 5);
+  const filteredCompanies = React.useMemo(() => {
+    return apiCompanies.filter(c => {
+      if (filters.companyType && filters.companyType !== 'All' && !c.category?.toLowerCase().includes(filters.companyType.toLowerCase())) return false;
+      if (filters.sector && filters.sector !== 'All' && !c.category?.toLowerCase().includes(filters.sector.toLowerCase())) return false;
+      if (filters.hiringNow && (!c.jobs || c.jobs <= 0)) return false;
+      if (filters.activelyHiring && (!c.jobs || c.jobs <= 0)) return false;
+      
+      if (filters.radius && filters.radius !== 'Anywhere') {
+        const centerLat = 20.296;
+        const centerLng = 85.824;
+        const dist = Math.sqrt(Math.pow(c.lat - centerLat, 2) + Math.pow(c.lng - centerLng, 2)) * 111; 
+        const r = parseInt(filters.radius);
+        if (!isNaN(r) && dist > r) return false;
+      }
+      return true;
+    });
+  }, [apiCompanies, filters]);
+
+  const allCompanies = filteredCompanies;
+  const topCompanies = filteredCompanies.slice(0, 5);
 
   const totalCompanies = allCompanies.length;
   const totalStartups = allCompanies.filter(c => {
@@ -255,30 +301,7 @@ const Home = () => {
     return cat.includes('mnc') || ec.includes('1,001') || ec.includes('5,001') || ec.includes('10,000') || ec.includes('501-1000') || ec.includes('501-1,000');
   }).length;
 
-  // Convert companies to GeoJSON feature points for supercluster
-  const points = allCompanies.map(company => ({
-    type: 'Feature',
-    properties: { cluster: false, companyId: company.id, ...company },
-    geometry: {
-      type: 'Point',
-      coordinates: [company.lng, company.lat]
-    }
-  }));
-
-  const mapBounds = bounds ? [
-    bounds.getSouthWest().lng,
-    bounds.getSouthWest().lat,
-    bounds.getNorthEast().lng,
-    bounds.getNorthEast().lat
-  ] : null;
-
-  // useSupercluster hook calculates the clusters automatically based on zoom & bounds
-  const { clusters, supercluster } = useSupercluster({
-    points,
-    bounds: mapBounds,
-    zoom,
-    options: { radius: 75, maxZoom: 15 } // At zoom 16+ it splits into individual markers
-  });
+  // Removed useSupercluster hook
 
   // Search & Auto-Suggestions state (Bhubaneswar Grounded)
   const [searchTerm, setSearchTerm] = useState('');
@@ -293,7 +316,7 @@ const Home = () => {
     const fetchSuggestions = async () => {
       try {
         setLoadingSuggestions(true);
-        const res = await axios.get(`http://localhost:5000/api/v1/companies/suggestions?q=${encodeURIComponent(searchTerm)}`);
+        const res = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/v1/companies/suggestions?q=${encodeURIComponent(searchTerm)}`);
         if (isMounted && res.data?.success) {
           setSuggestions(res.data.data || []);
         }
@@ -382,7 +405,7 @@ const Home = () => {
     setShowSuggestions(false);
 
     try {
-      const res = await axios.post('http://localhost:5000/api/v1/companies/fetch', { companyName: target });
+      const res = await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/v1/companies/fetch`, { companyName: target });
       const comp = res.data.data;
       if (comp && comp.name) {
         const lat = parseFloat(comp.latitude) || 20.2961;
@@ -589,9 +612,22 @@ const Home = () => {
         </button>
 
         <div className="flex items-center gap-2 shrink-0">
-          <Link to="/signin" className="flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900 border border-gray-200 px-3 py-2 sm:px-4 sm:py-2.5 rounded-lg bg-white shadow-sm hover:bg-gray-50 transition-colors">
-            <User className="w-4 h-4" /> <span className="hidden sm:inline">Sign In</span>
-          </Link>
+          {userInfo ? (
+            <>
+              {userInfo.role === 'admin' && (
+                <Link to="/admin-dashboard" className="flex items-center gap-2 text-sm font-medium text-[#5b61f4] bg-blue-50 border border-blue-100 hover:bg-blue-100 px-3 py-2 sm:px-4 sm:py-2.5 rounded-lg transition-colors">
+                  <span className="hidden sm:inline">Dashboard</span>
+                </Link>
+              )}
+              <button onClick={logout} className="flex items-center gap-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 px-3 py-2 sm:px-4 sm:py-2.5 rounded-lg transition-colors cursor-pointer">
+                <span className="hidden sm:inline">Logout</span>
+              </button>
+            </>
+          ) : (
+            <Link to="/signin" className="flex items-center gap-2 text-sm font-medium text-white bg-[#5b61f4] hover:bg-blue-700 px-3 py-2 sm:px-4 sm:py-2.5 rounded-lg shadow-sm transition-colors">
+              <User className="w-4 h-4" /> <span className="hidden sm:inline">Admin</span>
+            </Link>
+          )}
         </div>
       </header>
 
@@ -630,13 +666,13 @@ const Home = () => {
 
           {/* All Types */}
           <div className="relative shrink-0">
-            <button onClick={() => setActiveFilter(activeFilter === 'type' ? null : 'type')} className="flex items-center gap-2 bg-[#5b61f4] text-white px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap">
-              All Types <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 opacity-80 transition-transform ${activeFilter === 'type' ? 'rotate-180' : ''}`} />
+            <button onClick={() => setActiveFilter(activeFilter === 'type' ? null : 'type')} className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap ${filters.jobType && filters.jobType !== 'All' ? 'bg-[#5b61f4] text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
+              {filters.jobType && filters.jobType !== 'All' ? filters.jobType : 'All Types'} <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 opacity-80 transition-transform ${activeFilter === 'type' ? 'rotate-180' : ''}`} />
             </button>
             {activeFilter === 'type' && (
               <div className="absolute top-full left-0 mt-2 w-48 bg-white border border-gray-100 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.08)] z-50 py-1.5 animate-in fade-in zoom-in-95 duration-100">
-                {['Full Time', 'Part Time', 'Contract', 'Internship'].map(opt => (
-                  <div key={opt} onClick={() => setActiveFilter(null)} className="px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer transition-colors">{opt}</div>
+                {['All Types', 'Full Time', 'Part Time', 'Contract', 'Internship'].map(opt => (
+                  <div key={opt} onClick={() => { setFilters({...filters, jobType: opt === 'All Types' ? '' : opt}); setActiveFilter(null); }} className="px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer transition-colors">{opt}</div>
                 ))}
               </div>
             )}
@@ -644,13 +680,13 @@ const Home = () => {
 
           {/* Company Type */}
           <div className="relative shrink-0">
-            <button onClick={() => setActiveFilter(activeFilter === 'company' ? null : 'company')} className="flex items-center gap-2 border border-gray-200 text-gray-700 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium bg-white hover:bg-gray-50 whitespace-nowrap">
-              Company Type <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 text-gray-400 transition-transform ${activeFilter === 'company' ? 'rotate-180' : ''}`} />
+            <button onClick={() => setActiveFilter(activeFilter === 'company' ? null : 'company')} className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap ${filters.companyType && filters.companyType !== 'All' ? 'bg-[#5b61f4] text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
+              {filters.companyType && filters.companyType !== 'All' ? filters.companyType : 'Company Type'} <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 text-gray-400 transition-transform ${activeFilter === 'company' ? 'rotate-180' : ''}`} />
             </button>
             {activeFilter === 'company' && (
               <div className="absolute top-full left-0 mt-2 w-48 bg-white border border-gray-100 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.08)] z-50 py-1.5 animate-in fade-in zoom-in-95 duration-100">
-                {['MNC', 'Startup', 'Agency', 'Product Based', 'Service Based'].map(opt => (
-                  <div key={opt} onClick={() => setActiveFilter(null)} className="px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer transition-colors">{opt}</div>
+                {['All Types', 'MNC', 'Startup', 'Agency', 'Product Based', 'Service Based'].map(opt => (
+                  <div key={opt} onClick={() => { setFilters({...filters, companyType: opt === 'All Types' ? '' : opt}); setActiveFilter(null); }} className="px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer transition-colors">{opt}</div>
                 ))}
               </div>
             )}
@@ -658,13 +694,13 @@ const Home = () => {
 
           {/* Radius */}
           <div className="relative shrink-0 hidden sm:block">
-            <button onClick={() => setActiveFilter(activeFilter === 'radius' ? null : 'radius')} className="flex items-center gap-2 border border-gray-200 text-gray-700 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium bg-white hover:bg-gray-50 whitespace-nowrap">
-              Radius (10km) <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 text-gray-400 transition-transform ${activeFilter === 'radius' ? 'rotate-180' : ''}`} />
+            <button onClick={() => setActiveFilter(activeFilter === 'radius' ? null : 'radius')} className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap ${filters.radius && filters.radius !== 'Anywhere' ? 'bg-[#5b61f4] text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
+              {filters.radius ? filters.radius : 'Radius (10km)'} <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 text-gray-400 transition-transform ${activeFilter === 'radius' ? 'rotate-180' : ''}`} />
             </button>
             {activeFilter === 'radius' && (
               <div className="absolute top-full left-0 mt-2 w-40 bg-white border border-gray-100 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.08)] z-50 py-1.5 animate-in fade-in zoom-in-95 duration-100">
                 {['5 km', '10 km', '20 km', '50 km', 'Anywhere'].map(opt => (
-                  <div key={opt} onClick={() => setActiveFilter(null)} className="px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer transition-colors">{opt}</div>
+                  <div key={opt} onClick={() => { setFilters({...filters, radius: opt === 'Anywhere' ? '' : opt}); setActiveFilter(null); }} className="px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer transition-colors">{opt}</div>
                 ))}
               </div>
             )}
@@ -672,13 +708,13 @@ const Home = () => {
 
           {/* All Sectors */}
           <div className="relative shrink-0 hidden md:block">
-            <button onClick={() => setActiveFilter(activeFilter === 'sector' ? null : 'sector')} className="flex items-center gap-2 border border-gray-200 text-gray-700 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium bg-white hover:bg-gray-50 whitespace-nowrap">
-              All Sectors <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 text-gray-400 transition-transform ${activeFilter === 'sector' ? 'rotate-180' : ''}`} />
+            <button onClick={() => setActiveFilter(activeFilter === 'sector' ? null : 'sector')} className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap ${filters.sector && filters.sector !== 'All' ? 'bg-[#5b61f4] text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
+              {filters.sector && filters.sector !== 'All' ? filters.sector : 'All Sectors'} <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 text-gray-400 transition-transform ${activeFilter === 'sector' ? 'rotate-180' : ''}`} />
             </button>
             {activeFilter === 'sector' && (
               <div className="absolute top-full left-0 mt-2 w-48 bg-white border border-gray-100 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.08)] z-50 py-1.5 animate-in fade-in zoom-in-95 duration-100">
-                {['IT / Software', 'HealthTech', 'FinTech', 'EdTech', 'E-commerce'].map(opt => (
-                  <div key={opt} onClick={() => setActiveFilter(null)} className="px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer transition-colors">{opt}</div>
+                {['All Sectors', 'IT / Software', 'HealthTech', 'FinTech', 'EdTech', 'E-commerce'].map(opt => (
+                  <div key={opt} onClick={() => { setFilters({...filters, sector: opt === 'All Sectors' ? '' : opt}); setActiveFilter(null); }} className="px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer transition-colors">{opt}</div>
                 ))}
               </div>
             )}
@@ -686,22 +722,22 @@ const Home = () => {
 
           {/* More Options */}
           <div className="relative shrink-0 hidden lg:block">
-            <button onClick={() => setActiveFilter(activeFilter === 'more' ? null : 'more')} className="flex items-center gap-2 border border-gray-200 text-gray-700 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium bg-white hover:bg-gray-50 whitespace-nowrap">
+            <button onClick={() => setActiveFilter(activeFilter === 'more' ? null : 'more')} className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap ${filters.remoteOnly || filters.activelyHiring || filters.withSalary ? 'bg-[#5b61f4] text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
               More Options <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 text-gray-400 transition-transform ${activeFilter === 'more' ? 'rotate-180' : ''}`} />
             </button>
             {activeFilter === 'more' && (
               <div className="absolute top-full left-0 mt-2 w-56 bg-white border border-gray-100 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.08)] z-50 p-3 animate-in fade-in zoom-in-95 duration-100">
                 <div className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wider">Additional Filters</div>
                 <label className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
-                  <input type="checkbox" className="rounded text-blue-600 focus:ring-blue-500" />
+                  <input type="checkbox" checked={filters.remoteOnly} onChange={(e) => setFilters({...filters, remoteOnly: e.target.checked})} className="rounded text-blue-600 focus:ring-blue-500" />
                   <span className="text-sm text-gray-700">Remote Only</span>
                 </label>
                 <label className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
-                  <input type="checkbox" className="rounded text-blue-600 focus:ring-blue-500" />
+                  <input type="checkbox" checked={filters.activelyHiring} onChange={(e) => setFilters({...filters, activelyHiring: e.target.checked})} className="rounded text-blue-600 focus:ring-blue-500" />
                   <span className="text-sm text-gray-700">Actively Hiring</span>
                 </label>
                 <label className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
-                  <input type="checkbox" className="rounded text-blue-600 focus:ring-blue-500" />
+                  <input type="checkbox" checked={filters.withSalary} onChange={(e) => setFilters({...filters, withSalary: e.target.checked})} className="rounded text-blue-600 focus:ring-blue-500" />
                   <span className="text-sm text-gray-700">With Salary Details</span>
                 </label>
               </div>
@@ -710,26 +746,35 @@ const Home = () => {
           
           <div className="h-6 sm:h-8 w-px bg-gray-200 mx-1 hidden sm:block"></div>
           
-          <div className="flex items-center gap-1.5 sm:gap-2 px-1 sm:px-3 shrink-0">
-            <div className="w-4 h-4 sm:w-5 sm:h-5 rounded-full bg-[#f0f2ff] flex items-center justify-center">
-              <div className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-[#5b61f4]"></div>
+          <div onClick={() => setFilters({...filters, hiringNow: !filters.hiringNow})} className="flex items-center gap-1.5 sm:gap-2 px-1 sm:px-3 shrink-0 cursor-pointer">
+            <div className={`w-4 h-4 sm:w-5 sm:h-5 rounded-full flex items-center justify-center transition-colors ${filters.hiringNow ? 'bg-[#5b61f4]' : 'bg-[#f0f2ff]'}`}>
+              <div className={`w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full transition-colors ${filters.hiringNow ? 'bg-white' : 'bg-[#5b61f4]'}`}></div>
             </div>
             <span className="text-xs sm:text-sm font-medium text-gray-700 whitespace-nowrap">Hiring Now</span>
-            <div className="w-7 h-3.5 sm:w-8 sm:h-4 bg-gray-200 rounded-full ml-1 relative">
-              <div className="w-3 h-3 sm:w-3.5 sm:h-3.5 bg-white rounded-full absolute left-0.5 top-0.5 shadow-sm"></div>
+            <div className={`w-7 h-3.5 sm:w-8 sm:h-4 rounded-full ml-1 relative transition-colors ${filters.hiringNow ? 'bg-[#5b61f4]' : 'bg-gray-200'}`}>
+              <div className={`w-3 h-3 sm:w-3.5 sm:h-3.5 bg-white rounded-full absolute top-0.5 shadow-sm transition-all ${filters.hiringNow ? 'left-[14px] sm:left-[16px]' : 'left-0.5'}`}></div>
             </div>
           </div>
           
-          <button className="hidden md:block text-xs sm:text-sm font-medium text-gray-500 border border-gray-200 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg hover:bg-gray-50 ml-1 sm:ml-2 whitespace-nowrap shrink-0">
+          <button 
+            onClick={() => setFilters({jobType: '', companyType: '', radius: '', sector: '', hiringNow: false, remoteOnly: false, activelyHiring: false, withSalary: false})}
+            className="hidden md:block text-xs sm:text-sm font-medium text-gray-500 border border-gray-200 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg hover:bg-gray-50 ml-1 sm:ml-2 whitespace-nowrap shrink-0"
+          >
             Clear Filters
           </button>
         </div>
 
         <div className="flex items-center gap-1 sm:gap-2 border border-gray-200 rounded-lg p-1 bg-gray-50 shrink-0 ml-auto">
-          <button className="flex items-center gap-1.5 sm:gap-2 bg-white text-[#5b61f4] px-2 sm:px-4 py-1 sm:py-1.5 rounded-md text-xs sm:text-sm font-medium shadow-sm whitespace-nowrap">
+          <button 
+            onClick={() => setViewMode('map')}
+            className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-1 sm:py-1.5 rounded-md text-xs sm:text-sm font-medium whitespace-nowrap ${viewMode === 'map' ? 'bg-white text-[#5b61f4] shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+          >
             <MapIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> Map View
           </button>
-          <button className="flex items-center gap-1.5 sm:gap-2 text-gray-600 px-2 sm:px-4 py-1 sm:py-1.5 rounded-md text-xs sm:text-sm font-medium hover:text-gray-900 whitespace-nowrap">
+          <button 
+            onClick={() => setViewMode('list')}
+            className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-1 sm:py-1.5 rounded-md text-xs sm:text-sm font-medium whitespace-nowrap ${viewMode === 'list' ? 'bg-white text-[#5b61f4] shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+          >
             <List className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> List View
           </button>
         </div>
@@ -816,11 +861,12 @@ const Home = () => {
         </div>
 
         {/* Map Area */}
-        <div className="flex-1 relative bg-blue-50">
-          <MapContainer 
-            center={[20.2961, 85.8245]} 
-            zoom={12} 
-            className="h-full w-full z-0"
+        {viewMode === 'map' ? (
+          <div className="flex-1 relative bg-blue-50">
+            <MapContainer 
+              center={[20.2961, 85.8245]} 
+              zoom={12} 
+              className="h-full w-full z-0"
             zoomControl={false}
             ref={mapRef}
           >
@@ -832,65 +878,40 @@ const Home = () => {
             <MapEvents setBounds={setBounds} setZoom={setZoom} />
 
             {/* Render dynamic clusters and markers */}
-            {clusters.map(cluster => {
-              const [longitude, latitude] = cluster.geometry.coordinates;
-              const { cluster: isCluster, point_count: pointCount } = cluster.properties;
-
-              if (isCluster) {
-                // For small clusters (2–6): use stacked logo group with hover-spread
+            <MarkerClusterGroup
+              chunkedLoading
+              maxClusterRadius={75}
+              spiderfyOnMaxZoom={true}
+              showCoverageOnHover={false}
+              iconCreateFunction={(cluster) => {
+                const markers = cluster.getAllChildMarkers();
+                const pointCount = markers.length;
                 if (pointCount <= 6) {
-                  const leaves = supercluster.getLeaves(cluster.id, 6);
-                  const companyProps = leaves.map(l => l.properties);
-                  return (
-                    <Marker
-                      key={`cluster-${cluster.id}`}
-                      position={[latitude, longitude]}
-                      icon={createGroupIcon(companyProps)}
-                      eventHandlers={{
-                        click: () => {
-                          const expansionZoom = Math.min(supercluster.getClusterExpansionZoom(cluster.id), 18);
-                          mapRef.current.setView([latitude, longitude], expansionZoom, { animate: true });
-                        }
-                      }}
-                    />
-                  );
+                  const companies = markers.map(m => m.options.companyData);
+                  return createGroupIcon(companies);
                 }
-
-                // For large clusters: use the coloured bubble
                 let colorClass = 'green';
                 if (pointCount > 200) colorClass = 'red';
                 else if (pointCount > 50) colorClass = 'orange';
                 else if (pointCount > 10) colorClass = 'yellow';
-
-                return (
-                  <Marker
-                    key={`cluster-${cluster.id}`}
-                    position={[latitude, longitude]}
-                    icon={createClusterIcon(pointCount, colorClass)}
-                    eventHandlers={{
-                      click: () => {
-                        const expansionZoom = Math.min(supercluster.getClusterExpansionZoom(cluster.id), 18);
-                        mapRef.current.setView([latitude, longitude], expansionZoom, { animate: true });
-                      }
-                    }}
-                  />
-                );
-              }
-
-              return (
+                return createClusterIcon(pointCount, colorClass);
+              }}
+            >
+              {allCompanies.map(company => (
                 <Marker
-                  key={`company-${cluster.properties.companyId}`}
-                  position={[latitude, longitude]}
-                  icon={createCompanyIcon(cluster.properties)}
+                  key={`company-${company.id}`}
+                  position={[company.lat, company.lng]}
+                  companyData={company}
+                  icon={createCompanyIcon(company)}
                   eventHandlers={{
                     click: () => {
-                      handleCompanyClick(cluster.properties);
-                      mapRef.current.setView([latitude, longitude], 15, { animate: true });
+                      handleCompanyClick(company);
+                      mapRef.current.setView([company.lat, company.lng], 15, { animate: true });
                     }
                   }}
                 />
-              );
-            })}
+              ))}
+            </MarkerClusterGroup>
           </MapContainer>
 
           {/* Map Controls */}
@@ -1075,6 +1096,142 @@ const Home = () => {
             </div>
           )}
         </div>
+        ) : (
+          <div className="flex-1 bg-gray-50 overflow-y-auto p-4 sm:p-6 relative">
+            <div className="max-w-7xl mx-auto pb-10">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold text-gray-900">All Companies</h2>
+                <span className="bg-white border border-gray-200 text-gray-600 text-sm font-medium px-3 py-1 rounded-full shadow-sm">{allCompanies.length} Total</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
+                {allCompanies.map(company => (
+                  <div key={company.id} className="bg-white p-5 rounded-2xl border border-gray-100 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_30px_rgba(0,0,0,0.08)] hover:-translate-y-1 hover:border-blue-200 transition-all duration-300 cursor-pointer flex flex-col h-full group" onClick={() => { handleCompanyClick(company); if(viewMode==='list') setShowRightCard(true); }}>
+                    <div className="flex items-start gap-4 mb-4">
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 ${company.bg} overflow-hidden bg-white border border-gray-100 shadow-sm group-hover:scale-105 transition-transform`}>
+                        {company.logo && typeof company.logo === 'string' && company.logo.startsWith('http') ? (
+                          <img src={company.logo} alt="logo" className="w-full h-full object-contain p-1.5" />
+                        ) : (
+                          <span className="text-xl font-bold">{company.logo || company.name?.charAt(0) || ''}</span>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0 pt-1">
+                        <h3 className="font-bold text-gray-900 leading-tight truncate group-hover:text-[#5b61f4] transition-colors" title={company.name}>{company.name}</h3>
+                        <p className="text-xs text-[#5b61f4] font-medium mt-1 truncate bg-blue-50 inline-block px-2 py-0.5 rounded-md">{company.category}</p>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-col gap-2.5 text-sm text-gray-600 mb-5 flex-1 mt-2">
+                      <div className="flex items-start gap-2.5">
+                        <MapPin className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
+                        <span className="line-clamp-2 leading-tight text-gray-600">{company.location}</span>
+                      </div>
+                      {company.employeeCount && (
+                        <div className="flex items-center gap-2.5">
+                          <Users className="w-4 h-4 text-gray-400 shrink-0" />
+                          <span className="text-gray-600">{company.employeeCount}</span>
+                        </div>
+                      )}
+                      {company.website && (
+                        <div className="flex items-center gap-2.5">
+                          <Globe className="w-4 h-4 text-gray-400 shrink-0" />
+                          <a href={company.website} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-[#5b61f4] truncate" onClick={(e) => e.stopPropagation()}>{company.website.replace(/^https?:\/\//, '')}</a>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="mt-auto pt-4 border-t border-gray-50 flex items-center justify-between">
+                      {company.jobs > 0 ? (
+                        <>
+                          <span className="text-sm font-medium text-gray-600">Open Positions</span>
+                          <span className="bg-[#5b61f4] text-white text-xs font-bold px-2.5 py-1 rounded-md shadow-sm">
+                            {company.jobs}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-sm text-gray-400 italic">No open roles</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            {showRightCard && selectedCompany && (
+              <div className="fixed sm:absolute top-auto bottom-0 sm:top-6 right-0 sm:right-6 w-full sm:w-[360px] bg-white rounded-t-3xl sm:rounded-2xl shadow-[0_0_40px_rgba(0,0,0,0.1)] border-t sm:border border-gray-100 z-[1000] flex flex-col overflow-hidden max-h-[85vh] sm:max-h-[calc(100%-48px)] transition-transform animate-in slide-in-from-bottom-full sm:slide-in-from-right-8">
+                 <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0 bg-gray-50/50">
+                    <h3 className="font-bold text-gray-900">Company Details</h3>
+                    <button onClick={() => setShowRightCard(false)} className="w-8 h-8 flex items-center justify-center rounded-full bg-white border border-gray-200 text-gray-500 hover:bg-gray-100 transition-colors shadow-sm">
+                      <X className="w-4 h-4" />
+                    </button>
+                 </div>
+                 <div className="overflow-y-auto flex-1 p-5 custom-scrollbar">
+                    <div className="flex items-center gap-4 mb-5">
+                      <div className={`w-16 h-16 rounded-2xl flex items-center justify-center shrink-0 ${selectedCompany.bg} overflow-hidden bg-white border border-gray-100 shadow-sm`}>
+                        {selectedCompany.logo && typeof selectedCompany.logo === 'string' && selectedCompany.logo.startsWith('http') ? (
+                          <img src={selectedCompany.logo} alt="logo" className="w-full h-full object-contain p-2" />
+                        ) : (
+                          <span className="text-2xl font-bold">{selectedCompany.logo || selectedCompany.name?.charAt(0) || ''}</span>
+                        )}
+                      </div>
+                      <div>
+                        <h2 className="text-xl font-bold text-gray-900 leading-tight">{selectedCompany.name}</h2>
+                        <span className="inline-block bg-blue-50 text-[#5b61f4] text-xs font-bold px-2 py-1 rounded mt-1.5">{selectedCompany.category}</span>
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                      <div className="flex items-start gap-3">
+                        <MapPin className="w-5 h-5 text-gray-400 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">Location</p>
+                          <p className="text-sm text-gray-600 mt-0.5">{selectedCompany.location}</p>
+                        </div>
+                      </div>
+                      {selectedCompany.employeeCount && (
+                        <div className="flex items-start gap-3">
+                          <Users className="w-5 h-5 text-gray-400 mt-0.5" />
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">Company Size</p>
+                            <p className="text-sm text-gray-600 mt-0.5">{selectedCompany.employeeCount}</p>
+                          </div>
+                        </div>
+                      )}
+                      {selectedCompany.description && (
+                         <div className="mt-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+                           <p className="text-sm text-gray-600 leading-relaxed">{selectedCompany.description}</p>
+                         </div>
+                      )}
+                      {selectedCompany.jobs > 0 && (
+                        <div className="mt-4 bg-[#f4f6fb] border border-blue-100 rounded-xl p-4 flex items-center justify-between">
+                          <div className="flex items-center gap-2 font-bold text-gray-900">
+                            <Briefcase className="w-5 h-5 text-[#5b61f4]" />
+                            {selectedCompany.jobs} Open Jobs
+                          </div>
+                          <button className="bg-white text-[#5b61f4] border border-blue-200 font-bold text-sm px-4 py-2 rounded-lg hover:bg-blue-50 transition-colors shadow-sm">
+                            View Jobs
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                 </div>
+                 <div className="p-4 border-t border-gray-100 bg-white grid grid-cols-2 gap-3 shrink-0">
+                    {selectedCompany.website ? (
+                      <a href={selectedCompany.website} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-2 text-sm font-bold text-[#5b61f4] border-2 border-blue-100 bg-blue-50 rounded-xl py-3 hover:bg-blue-100 transition-colors">
+                        <Globe className="w-4 h-4" /> Website
+                      </a>
+                    ) : (
+                      <button className="flex items-center justify-center gap-2 text-sm font-bold text-gray-400 border-2 border-gray-100 rounded-xl py-3 cursor-not-allowed">
+                        <Globe className="w-4 h-4" /> No Website
+                      </button>
+                    )}
+                    <button className="bg-[#5b61f4] text-white text-sm font-bold rounded-xl py-3 hover:bg-blue-700 transition-colors shadow-sm">
+                      View Profile
+                    </button>
+                 </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Bottom Footer Section */}
